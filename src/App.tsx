@@ -1196,6 +1196,44 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
     }
   };
   
+  const handleImageUpload = (file: File, callback: (url: string) => void) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 1200;
+        const scale = MAX_WIDTH / img.width;
+        canvas.width = MAX_WIDTH;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        callback(canvas.toDataURL('image/jpeg', 0.7));
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const deleteCompetition = async (id: string) => {
+    if (confirm("هل أنت متأكد من حذف هذه المسابقة وكل البيانات المتعلقة بها؟")) {
+      setLoading(true);
+      try {
+        const answersSnap = await getDocs(collection(db, `competitions/${id}/answers`));
+        const deletePromises = answersSnap.docs.map(d => deleteDoc(doc(db, `competitions/${id}/answers`, d.id)));
+        await Promise.all(deletePromises);
+        await deleteDoc(doc(db, "competitions", id));
+        alert("تم الحذف بنجاح");
+      } catch (err) {
+        console.error(err);
+        alert("خطأ في الحذف");
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
   useEffect(() => {
     const saved = localStorage.getItem("eduwin_student");
     let manualId = "";
@@ -1204,52 +1242,13 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
       manualId = p.uid;
     }
 
-    const handleImageUpload = (file: File, callback: (url: string) => void) => {
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const MAX_WIDTH = 1200;
-          const scale = MAX_WIDTH / img.width;
-          canvas.width = MAX_WIDTH;
-          canvas.height = img.height * scale;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
-          callback(canvas.toDataURL('image/jpeg', 0.7));
-        };
-        img.src = e.target?.result as string;
-      };
-      reader.readAsDataURL(file);
-    };
-
-    const deleteCompetition = async (id: string) => {
-      if (confirm("هل أنت متأكد من حذف هذه المسابقة وكل البيانات المتعلقة بها؟")) {
-        setLoading(true);
-        try {
-          // Delete all answers first
-          const answersSnap = await getDocs(collection(db, `competitions/${id}/answers`));
-          const deletePromises = answersSnap.docs.map(d => deleteDoc(doc(db, `competitions/${id}/answers`, d.id)));
-          await Promise.all(deletePromises);
-          // Delete competition
-          await deleteDoc(doc(db, "competitions", id));
-          alert("تم الحذف بنجاح");
-        } catch (err) {
-          console.error(err);
-          alert("خطأ في الحذف");
-        } finally {
-          setLoading(false);
-        }
-      }
-    };
+    // Functions moved to component scope
 
     const checkAdmin = async (uid: string) => {
       if (!uid) return false;
       const adminDoc = await getDoc(doc(db, "admins", uid));
       if (adminDoc.exists()) return true;
       
-      // Secondary check by nationalId if uid is not in admins
       const saved = localStorage.getItem("eduwin_student");
       if (saved) {
         const p = JSON.parse(saved);
@@ -1839,8 +1838,8 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                    {comp.winnerPhotoUrl ? (
                      <div className="relative group rounded-2xl overflow-hidden aspect-video border border-white/10">
                         <img src={comp.winnerPhotoUrl} alt="Honoring" className="w-full h-full object-cover" />
-                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
-                           <label className="cursor-pointer bg-white text-black px-4 py-2 rounded-lg font-bold text-xs shadow-xl">
+                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center gap-3 transition-all">
+                           <label className="cursor-pointer bg-white text-black px-4 py-2 rounded-lg font-bold text-xs shadow-xl hover:bg-neon-cyan transition-colors">
                              تغيير الصورة
                              <input 
                                type="file" 
@@ -1850,6 +1849,16 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                                onChange={(e) => e.target.files && handleHonorPhotoUpload(comp.id, e.target.files[0])}
                              />
                            </label>
+                           <button 
+                             onClick={async () => {
+                               if(confirm("حذف صورة التكريم لهذا البطل؟")) {
+                                 await setDoc(doc(db, "competitions", comp.id), { winnerPhotoUrl: "" }, { merge: true });
+                               }
+                             }}
+                             className="bg-red-500 text-white px-4 py-2 rounded-lg font-bold text-xs shadow-xl hover:bg-red-600 transition-colors"
+                           >
+                             حذف الصورة
+                           </button>
                         </div>
                      </div>
                    ) : (
@@ -2001,23 +2010,55 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
       
       {/* --- History / Archive Section --- */}
       <section className="bg-dark-surface p-10 rounded-[40px] border border-white/5 shadow-2xl mt-10">
-         <h2 className="text-2xl font-black mb-8 text-right flex flex-row-reverse items-center gap-4">
-           <History className="w-8 h-8 text-white/20" />
-           أرشيف المسابقات السابقة
-         </h2>
-         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {finishedCompetitions.map((comp) => (
-              <div key={comp.id} className="bg-black/40 p-6 rounded-3xl border border-white/5 hover:border-white/10 transition-all">
-                  <div className="flex flex-row-reverse justify-between items-center mb-4">
-                     <h4 className="font-bold text-white">{comp.title}</h4>
-                     <button onClick={() => deleteCompetition(comp.id)} className="text-white/20 hover:text-red-500">
-                       <Trash2 className="w-4 h-4" />
-                     </button>
-                  </div>
-                  <div className="text-[10px] text-white/20 text-right">{new Date(comp.endTime || "").toLocaleDateString('ar-SA')}</div>
-              </div>
-            ))}
-         </div>
+          <h2 className="text-2xl font-black mb-8 text-right flex flex-row-reverse items-center gap-4">
+            <History className="w-8 h-8 text-white/20" />
+            أرشيف المسابقات السابقة
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+             {finishedCompetitions.map((comp) => (
+               <div key={comp.id} className="bg-black/40 p-6 rounded-3xl border border-white/5 hover:border-white/10 transition-all group relative">
+                   <div className="flex flex-row-reverse justify-between items-center mb-4">
+                      <h4 className="font-bold text-white text-right">{comp.title}</h4>
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteCompetition(comp.id);
+                        }} 
+                        className="text-white/10 hover:text-red-500 transition-colors"
+                        title="حذف المسابقة بالكامل"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                   </div>
+                   
+                   {comp.winnerPhotoUrl && (
+                     <div className="mb-4 relative group/img overflow-hidden rounded-xl border border-white/5 aspect-video">
+                       <img src={comp.winnerPhotoUrl} className="w-full h-full object-cover" alt="Winner" />
+                       <button 
+                         onClick={async (e) => {
+                           e.stopPropagation();
+                           if(confirm("حذف صورة التكريم لهذه المسابقة؟")) {
+                             await setDoc(doc(db, "competitions", comp.id), { winnerPhotoUrl: "" }, { merge: true });
+                           }
+                         }}
+                         className="absolute inset-0 bg-red-500/90 text-white opacity-0 group-hover/img:opacity-100 transition-all flex flex-col items-center justify-center gap-2 font-black text-[10px]"
+                       >
+                         <Trash2 className="w-5 h-5" />
+                         حذف صورة البطل
+                       </button>
+                     </div>
+                   )}
+
+                   <div className="flex flex-row-reverse justify-between items-center text-[10px] text-white/20">
+                      <span>{new Date(comp.endTime || "").toLocaleDateString('ar-SA')}</span>
+                      {comp.winnerName && <span className="text-neon-cyan font-bold">البطل: {comp.winnerName}</span>}
+                   </div>
+               </div>
+             ))}
+             {finishedCompetitions.length === 0 && (
+               <div className="col-span-full py-20 text-center text-white/10 italic border-2 border-dashed border-white/5 rounded-3xl">لا توجد مسابقات في الأرشيف</div>
+             )}
+          </div>
       </section>
     </div>
   );
