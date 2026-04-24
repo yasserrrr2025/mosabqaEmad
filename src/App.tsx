@@ -330,6 +330,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
   const [qualifiedStudents, setQualifiedStudents] = useState<{ id: string, name: string }[]>([]);
   const [pastWinners, setPastWinners] = useState<PastWinner[]>([]);
   const [topStudents, setTopStudents] = useState<any[]>([]);
+  const [liveStats, setLiveStats] = useState({ totalAnswers: 0, correctAnswers: 0 });
 
   // منع النسخ وتصوير الشاشة المتكرر (مستوى الـ DOM)
   useEffect(() => {
@@ -420,6 +421,19 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    if (competition?.id) {
+      const unsub = onSnapshot(collection(db, `competitions/${competition.id}/answers`), (snapshot) => {
+        const docs = snapshot.docs.map(d => d.data());
+        setLiveStats({
+          totalAnswers: docs.length,
+          correctAnswers: docs.filter((a: any) => a.isCorrect).length
+        });
+      });
+      return () => unsub();
+    }
+  }, [competition?.id]);
 
   useEffect(() => {
     if (competition && student) {
@@ -672,11 +686,11 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
             <ul className="space-y-3">
               <li className="flex flex-row-reverse justify-between py-3 border-b border-white/5 text-sm">
                 <span>الطلاب المشاركين</span>
-                <span className="text-neon-cyan font-bold">1,248</span>
+                <span className="text-neon-cyan font-bold">{liveStats.totalAnswers}</span>
               </li>
               <li className="flex flex-row-reverse justify-between py-3 border-b border-white/5 text-sm">
                 <span>إجابات صحيحة</span>
-                <span className="text-neon-cyan font-bold">452</span>
+                <span className="text-neon-cyan font-bold">{liveStats.correctAnswers}</span>
               </li>
             </ul>
           </div>
