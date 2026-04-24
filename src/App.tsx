@@ -819,15 +819,6 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
                       <p className="text-white/50 text-lg leading-relaxed mb-6">
                         شكراً لك يا بطل. إجابتك الآن في مرحلة التدقيق. <br/>اربط حزام الأمان، السحب سيبدأ قريباً!
                       </p>
-                      
-                      {myAnswerData && (
-                        <div className={cn(
-                          "p-4 rounded-2xl border font-bold text-sm",
-                          myAnswerData.isCorrect ? "bg-green-500/20 border-green-500 text-green-500" : "bg-orange-500/20 border-orange-500 text-orange-500"
-                        )}>
-                          {myAnswerData.isCorrect ? "مبروك اجابتك صحيحة وتدخل السحب الان" : "حظاً موفقاً! حاول في المسابقات القادمة"}
-                        </div>
-                      )}
                     </motion.div>
                   )}
                 </div>
