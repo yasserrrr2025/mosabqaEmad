@@ -13,6 +13,16 @@ const LOGO_URL = "https://upload.wikimedia.org/wikipedia/ar/1/17/Saudi_Ministry_
 // --- Types ---
 type QuestionType = "text" | "image" | "mcq" | "multi";
 
+const normalizeArabic = (text: string) => {
+  return text
+    .replace(/[أإآا]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+};
+
 interface CompetitionData {
   id: string;
   title: string;
@@ -499,14 +509,19 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
     try {
       // Automatic Correctness Check
       let isCorrect = false;
-      const studentAnswer = finalAnswer.trim().toLowerCase();
-      const correctAnswer = (competition.correctAnswer || "").trim().toLowerCase();
+      const studentAnswer = normalizeArabic(finalAnswer);
+      const correctAnswer = normalizeArabic(competition.correctAnswer || "");
 
       if (competition.questionType === "text") {
         // Keywords check (if student answer contains the keyword)
         isCorrect = studentAnswer.includes(correctAnswer);
+      } else if (competition.questionType === "multi") {
+        // Multi-choice: sort both to compare regardless of order
+        const sArr = finalAnswer.split(", ").map(x => normalizeArabic(x)).sort();
+        const cArr = (competition.correctAnswer || "").split(", ").map(x => normalizeArabic(x)).sort();
+        isCorrect = JSON.stringify(sArr) === JSON.stringify(cArr);
       } else {
-        // MCQ/Multi exact match
+        // MCQ single exact match
         isCorrect = studentAnswer === correctAnswer;
       }
 
@@ -2010,7 +2025,12 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                              </div>
                           </div>
                           <div className="text-sm bg-black/40 p-3 rounded-xl border border-white/5 flex flex-row-reverse items-center justify-between min-w-[200px]">
-                            <span className="text-white/70">{a.answerText}</span>
+                            <div className="flex flex-col items-end gap-1">
+                               <span className="text-white/70">{a.answerText}</span>
+                               {a.reviewed && (
+                                 <span className="text-[9px] text-green-500/60 font-bold uppercase tracking-wider">● تصحيح آلي</span>
+                               )}
+                            </div>
                             {a.isCorrect ? (
                               <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />
                             ) : (
