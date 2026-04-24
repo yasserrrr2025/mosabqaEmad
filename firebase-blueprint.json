@@ -1,0 +1,80 @@
+{
+  "entities": {
+    "Competition": {
+      "title": "Competition",
+      "description": "Global state for the active contest",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Title of the contest" },
+        "question": { "type": "string", "description": "The question text" },
+        "prizeImageUrl": { "type": "string", "description": "URL for the prize image" },
+        "adImageUrl": { "type": "string", "description": "URL for the advertisement image" },
+        "adLink": { "type": "string", "description": "URL for the advertisement link" },
+        "status": { 
+          "type": "string", 
+          "enum": ["idle", "active", "drawing", "finished"], 
+          "description": "Current phase of the competition" 
+        },
+        "endTime": { "type": "string", "format": "date-time", "description": "The moment the countdown reaches zero" },
+        "correctAnswer": { "type": "string", "description": "Reference answer for auto-matching" },
+        "winnerId": { "type": "string", "description": "ID of the selected winner" },
+        "winnerName": { "type": "string", "description": "Name of the selected winner" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["status"]
+    },
+    "Answer": {
+      "title": "Answer",
+      "description": "A student's answer submission",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "answerText": { "type": "string" },
+        "isCorrect": { "type": "boolean" },
+        "reviewed": { "type": "boolean" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "studentName", "answerText"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student profile data",
+      "type": "object",
+      "properties": {
+        "nationalId": { "type": "string" },
+        "name": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nationalId", "name"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Admin user whitelist",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" }
+      },
+      "required": ["email"]
+    }
+  },
+  "firestore": {
+    "/competitions/{compId}": {
+      "schema": "Competition",
+      "description": "Main competition document"
+    },
+    "/competitions/{compId}/answers/{answerId}": {
+      "schema": "Answer",
+      "description": "Answers submitted for this competition"
+    },
+    "/students/{studentId}": {
+      "schema": "Student",
+      "description": "Persistent student records"
+    },
+    "/admins/{adminId}": {
+      "schema": "Admin",
+      "description": "List of admin users"
+    }
+  }
+}
