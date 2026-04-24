@@ -31,6 +31,7 @@ interface CompetitionData {
   winnerSection?: string;
   winnerPhotoUrl?: string; // New: Honoring Photo
   note?: string;
+  correctAnswer?: string; // New: For auto-correction
   createdAt?: string; // Required for sorting
 }
 
@@ -284,21 +285,26 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
 
   useEffect(() => {
     if (competition?.status === 'drawing') {
+      // Use onSnapshot for reactive updates of qualified names during draw
       const q = query(
         collection(db, `competitions/${competition.id}/answers`),
         where("isCorrect", "==", true)
       );
-      getDocs(q).then(snap => {
+      const unsub = onSnapshot(q, (snap) => {
         let names = snap.docs.map(d => d.data().studentName);
         if (names.length === 0) {
-           // Fallback if no correct answers
+           // Fallback to all participants if no correct answers yet
            getDocs(collection(db, `competitions/${competition.id}/answers`)).then(s => {
              setQualifiedNames(s.docs.map(d => d.data().studentName));
            });
         } else {
           setQualifiedNames(names);
         }
-      });
+      }, (err) => console.error("Error fetching qualified names:", err));
+      return () => unsub();
+    } else {
+      setQualifiedNames([]);
+      setShuffleIndex(0);
     }
   }, [competition?.status, competition?.id]);
 
@@ -330,7 +336,8 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
   const [qualifiedStudents, setQualifiedStudents] = useState<{ id: string, name: string }[]>([]);
   const [pastWinners, setPastWinners] = useState<PastWinner[]>([]);
   const [topStudents, setTopStudents] = useState<any[]>([]);
-  const [liveStats, setLiveStats] = useState({ totalAnswers: 0, correctAnswers: 0 });
+  const [liveStats, setLiveStats] = useState({ totalAnswers: 0 });
+  const [myAnswerData, setMyAnswerData] = useState<{ answerText: string, isCorrect: boolean } | null>(null);
 
   // منع النسخ وتصوير الشاشة المتكرر (مستوى الـ DOM)
   useEffect(() => {
@@ -427,8 +434,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
       const unsub = onSnapshot(collection(db, `competitions/${competition.id}/answers`), (snapshot) => {
         const docs = snapshot.docs.map(d => d.data());
         setLiveStats({
-          totalAnswers: docs.length,
-          correctAnswers: docs.filter((a: any) => a.isCorrect).length
+          totalAnswers: docs.length
         });
       });
       return () => unsub();
@@ -440,11 +446,14 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
       const checkStatus = async () => {
         const answerDoc = await getDoc(doc(db, `competitions/${competition.id}/answers`, student.uid));
         if (answerDoc.exists()) {
+          const data = answerDoc.data();
           setSubmitted(true);
-          setAnswer(answerDoc.data().answerText);
+          setAnswer(data.answerText);
+          setMyAnswerData({ answerText: data.answerText, isCorrect: data.isCorrect });
         } else {
           setSubmitted(false);
           setAnswer("");
+          setMyAnswerData(null);
         }
       };
       checkStatus();
@@ -488,6 +497,19 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
     const finalAnswer = competition?.questionType === "multi" ? multiAnswers.join(", ") : answer;
     if (!finalAnswer || !competition || submitted) return;
     try {
+      // Automatic Correctness Check
+      let isCorrect = false;
+      const studentAnswer = finalAnswer.trim().toLowerCase();
+      const correctAnswer = (competition.correctAnswer || "").trim().toLowerCase();
+
+      if (competition.questionType === "text") {
+        // Keywords check (if student answer contains the keyword)
+        isCorrect = studentAnswer.includes(correctAnswer);
+      } else {
+        // MCQ/Multi exact match
+        isCorrect = studentAnswer === correctAnswer;
+      }
+
       await setDoc(doc(db, `competitions/${competition.id}/answers`, student.uid), {
         studentId: student.uid,
         studentName: student.name,
@@ -495,10 +517,11 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
         section: student.section || "غير محدد",
         answerText: finalAnswer,
         timestamp: new Date().toISOString(),
-        isCorrect: false,
-        reviewed: false
+        isCorrect: isCorrect,
+        reviewed: true
       });
       setSubmitted(true);
+      setMyAnswerData({ answerText: finalAnswer, isCorrect: isCorrect });
     } catch (err) {
       console.error(err);
     }
@@ -619,16 +642,6 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
           البث المباشر
         </button>
         <button 
-          onClick={() => setActiveTab("honor")}
-          className={cn(
-            "flex flex-row-reverse items-center gap-2 px-6 py-2 rounded-xl font-bold transition-all text-sm",
-            activeTab === "honor" ? "bg-neon-purple text-white shadow-[0_0_15px_rgba(188,19,254,0.3)]" : "text-white/40 hover:text-white/70"
-          )}
-        >
-          <Award className="w-4 h-4" />
-          لوحة الشرف
-        </button>
-        <button 
           onClick={() => setActiveTab("hall")}
           className={cn(
             "flex flex-row-reverse items-center gap-2 px-6 py-2 rounded-xl font-bold transition-all text-sm",
@@ -687,10 +700,6 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
               <li className="flex flex-row-reverse justify-between py-3 border-b border-white/5 text-sm">
                 <span>الطلاب المشاركين</span>
                 <span className="text-neon-cyan font-bold">{liveStats.totalAnswers}</span>
-              </li>
-              <li className="flex flex-row-reverse justify-between py-3 border-b border-white/5 text-sm">
-                <span>إجابات صحيحة</span>
-                <span className="text-neon-cyan font-bold">{liveStats.correctAnswers}</span>
               </li>
             </ul>
           </div>
@@ -807,9 +816,18 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
                       <div className="absolute -top-10 -right-10 w-40 h-40 bg-green-500/10 rounded-full blur-3xl" />
                       <CheckCircle className="w-20 h-20 text-green-500 mx-auto mb-6 drop-shadow-[0_0_15px_rgba(34,197,94,0.5)]" />
                       <h4 className="text-3xl font-black text-white mb-4">تم الإرسال بنجاح!</h4>
-                      <p className="text-white/50 text-lg leading-relaxed">
+                      <p className="text-white/50 text-lg leading-relaxed mb-6">
                         شكراً لك يا بطل. إجابتك الآن في مرحلة التدقيق. <br/>اربط حزام الأمان، السحب سيبدأ قريباً!
                       </p>
+                      
+                      {myAnswerData && (
+                        <div className={cn(
+                          "p-4 rounded-2xl border font-bold text-sm",
+                          myAnswerData.isCorrect ? "bg-green-500/20 border-green-500 text-green-500" : "bg-orange-500/20 border-orange-500 text-orange-500"
+                        )}>
+                          {myAnswerData.isCorrect ? "مبروك اجابتك صحيحة وتدخل السحب الان" : "حظاً موفقاً! حاول في المسابقات القادمة"}
+                        </div>
+                      )}
                     </motion.div>
                   )}
                 </div>
@@ -852,6 +870,29 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
                   </AnimatePresence>
                 </div>
 
+                {submitted && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mt-8 flex flex-col items-center gap-4 w-full max-w-lg"
+                  >
+                    <div className={cn(
+                      "w-full p-6 rounded-3xl border-2 backdrop-blur-md text-center",
+                      myAnswerData?.isCorrect ? "bg-green-500/20 border-green-500/40" : "bg-rose-500/20 border-rose-500/40"
+                    )}>
+                       <div className="text-[10px] uppercase tracking-widest opacity-60 mb-2">نتيجتك النهائية</div>
+                       <h4 className={cn("text-2xl font-black mb-2", myAnswerData?.isCorrect ? "text-green-400" : "text-rose-400")}>
+                          {myAnswerData?.isCorrect ? "مبروك اجابتك صحيحة وتدخل السحب الان" : "للأسف إجابتك غير صحيحة"}
+                       </h4>
+                       <div className="text-white/40 text-sm">
+                          {competition.correctAnswer && (
+                            <span className="block mt-2">الإجابة الصحيحة هي: <span className="text-white font-bold">{competition.correctAnswer}</span></span>
+                          )}
+                       </div>
+                    </div>
+                  </motion.div>
+                )}
+
                 <div className="mt-12 flex items-center gap-3">
                   <div className="w-2 h-2 rounded-full bg-neon-purple animate-ping" />
                   <span className="text-white/40 font-bold uppercase tracking-widest text-[10px]">جاري تدوير القرص الآن</span>
@@ -878,6 +919,24 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
                   >
                     {competition.winnerName}
                   </motion.div>
+
+                  {submitted && (
+                    <div className={cn(
+                      "mb-8 p-6 rounded-3xl border-2 backdrop-blur-md",
+                      myAnswerData?.isCorrect ? "bg-green-500/10 border-green-500/30" : "bg-rose-500/10 border-rose-500/30"
+                    )}>
+                      <div className="text-[10px] uppercase tracking-widest opacity-60 mb-2">إجابتك ونتيجة السحب</div>
+                      <h4 className={cn("text-xl font-black mb-1", myAnswerData?.isCorrect ? "text-green-400" : "text-rose-400")}>
+                        {myAnswerData?.isCorrect ? "مبروك! إجابتك كانت صحيحة ودخلت السحب" : "حظاً موفقاً! إجابتك لم تكن صحيحة"}
+                      </h4>
+                      <p className="text-white/40 text-xs">
+                        إجابتك: <span className="text-white/70">{myAnswerData?.answerText}</span>
+                        {competition.correctAnswer && (
+                           <span className="block mt-1">الإجابة الصحيحة: <span className="text-white font-bold">{competition.correctAnswer}</span></span>
+                        )}
+                      </p>
+                    </div>
+                  )}
 
                   <div className="inline-flex flex-col items-center gap-4 bg-accent-gold/5 border border-accent-gold/20 p-6 rounded-3xl w-full">
                     <span className="text-white/40 text-sm uppercase tracking-wider">الجائزة المستلمة:</span>
@@ -917,42 +976,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
       </motion.div>
     )}
 
-        {activeTab === "honor" && (
-          <motion.div
-            key="honor-tab"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="flex-grow flex flex-col gap-6"
-          >
-            <div className="bg-dark-surface p-10 rounded-[40px] border border-neon-purple/20 text-center relative overflow-hidden backdrop-blur-xl">
-               <div className="absolute top-0 right-0 w-96 h-96 bg-neon-purple/5 rounded-full blur-[100px] -mr-48 -mt-48" />
-               <Award className="w-20 h-20 text-neon-purple mx-auto mb-6 drop-shadow-[0_0_15px_rgba(188,19,254,0.5)]" />
-               <h2 className="text-5xl font-black text-white mb-2">لوحة الشرف</h2>
-               <p className="text-white/40 text-lg uppercase tracking-widest">أكثر الطلاب تميزاً وتفاعلاً في المنصة</p>
-            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-10">
-               {topStudents.map((s, idx) => (
-                 <motion.div
-                   key={idx}
-                   whileHover={{ y: -10 }}
-                   className="bg-dark-surface p-6 rounded-[32px] border border-white/5 flex flex-row-reverse items-center gap-6 group relative overflow-hidden"
-                 >
-                   <div className="absolute top-0 right-0 w-1 h-full bg-neon-purple opacity-0 group-hover:opacity-100 transition-all" />
-                   <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center text-3xl font-black text-neon-purple">
-                     {idx + 1}
-                   </div>
-                   <div className="flex-grow text-right">
-                     <h4 className="text-xl font-bold group-hover:text-neon-purple transition-colors">{s.name}</h4>
-                     <p className="text-white/40 text-sm">{s.grade} - فصل: {s.section}</p>
-                   </div>
-                   {idx < 3 && <Trophy className={cn("w-6 h-6", idx === 0 ? "text-accent-gold" : idx === 1 ? "text-gray-400" : "text-amber-700")} />}
-                 </motion.div>
-               ))}
-            </div>
-          </motion.div>
-        )}
 
         {activeTab === "hall" && (
           <motion.div
@@ -1437,7 +1461,16 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
   const handleStartDraw = async () => {
     if (!competition) return;
     if (confirm("هل أنت متأكد من بدء السحب وإغلاق المشاركة؟")) {
-      await setDoc(doc(db, "competitions", competition.id), { status: "drawing" }, { merge: true });
+      setLoading(true);
+      try {
+        await setDoc(doc(db, "competitions", competition.id), { status: "drawing" }, { merge: true });
+        alert("بدأ السحب الآن! سيظهر للأبطال في البث المباشر.");
+      } catch (err) {
+        console.error("Draw initiation failed:", err);
+        alert("فشل بدء السحب: يرجى التحقق من اتصال الإنترنت والصلاحيات.");
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
@@ -1985,8 +2018,13 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                                 <span className="bg-neon-purple/10 px-2 py-0.5 rounded text-[10px] text-neon-purple">{a.section}</span>
                              </div>
                           </div>
-                          <div className="text-sm bg-black/40 p-3 rounded-xl border border-white/5 inline-block text-white/70 min-w-[200px]">
-                            {a.answerText}
+                          <div className="text-sm bg-black/40 p-3 rounded-xl border border-white/5 flex flex-row-reverse items-center justify-between min-w-[200px]">
+                            <span className="text-white/70">{a.answerText}</span>
+                            {a.isCorrect ? (
+                              <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />
+                            ) : (
+                              <X className="w-4 h-4 text-rose-500 shrink-0" />
+                            )}
                           </div>
                        </div>
                        
