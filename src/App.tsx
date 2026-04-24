@@ -354,7 +354,18 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
   };
 
   if (isAdmin) return <AdminView />;
-  if (!competition) return <LoadingScreen />;
+  
+  // Handle Loading state
+  if (!competition) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#050508] text-white p-6" dir="rtl">
+        <Trophy className="w-16 h-16 text-[#00f3ff] mb-6 opacity-20" />
+        <h2 className="text-2xl font-bold mb-2">لا توجد مسابقات نشطة حالياً</h2>
+        <p className="text-white/40 text-center">سيتم إظهار المسابقات هنا بمجرد بدئها من قبل الإدارة.</p>
+        <button onClick={() => { auth.signOut(); localStorage.removeItem("eduwin_student"); window.location.reload(); }} className="mt-8 text-[#00f3ff] text-sm underline">تسجيل الخروج</button>
+      </div>
+    );
+  }
 
   const now = Date.now();
   const startTime = competition.startTime ? new Date(competition.startTime).getTime() : 0;
