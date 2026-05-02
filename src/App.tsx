@@ -1,7 +1,7 @@
 import { useState, useEffect, FormEvent } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
-import { doc, onSnapshot, setDoc, query, collection, where, getDocs, getDoc, deleteDoc } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, query, collection, where, getDocs, getDoc, deleteDoc, limit, orderBy } from "firebase/firestore";
 import { auth, db } from "./lib/firebase";
 import { motion, AnimatePresence } from "motion/react";
 import { Trophy, LogIn, LayoutDashboard, Send, Clock, AlertCircle, ExternalLink, Users, CheckCircle, Trash2, Plus, Check, ChevronLeft, ChevronRight, X, Award, History, TrendingUp, Medal, Star, Camera } from "lucide-react";
@@ -295,23 +295,30 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
 
   useEffect(() => {
     if (competition?.status === 'drawing') {
-      // Use onSnapshot for reactive updates of qualified names during draw
-      const q = query(
-        collection(db, `competitions/${competition.id}/answers`),
-        where("isCorrect", "==", true)
-      );
-      const unsub = onSnapshot(q, (snap) => {
-        let names = snap.docs.map(d => d.data().studentName);
-        if (names.length === 0) {
-           // Fallback to all participants if no correct answers yet
-           getDocs(collection(db, `competitions/${competition.id}/answers`)).then(s => {
-             setQualifiedNames(s.docs.map(d => d.data().studentName));
-           });
-        } else {
+      const fetchNames = async () => {
+        try {
+          const q = query(
+            collection(db, `competitions/${competition.id}/answers`),
+            where("isCorrect", "==", true),
+            limit(10)
+          );
+          const snap = await getDocs(q);
+          let names = snap.docs.map(d => d.data().studentName);
+          if (names.length === 0) {
+             const fallbackQ = query(collection(db, `competitions/${competition.id}/answers`), limit(10));
+             const fallbackSnap = await getDocs(fallbackQ);
+             names = fallbackSnap.docs.map(d => d.data().studentName);
+          }
+          if (names.length === 0) {
+            names = ["؟؟؟؟؟؟", "جاري البحث...", "انتظر قليلاً"];
+          }
           setQualifiedNames(names);
+        } catch (e) {
+          console.error(e);
+          setQualifiedNames(["؟؟؟؟؟؟"]);
         }
-      }, (err) => console.error("Error fetching qualified names:", err));
-      return () => unsub();
+      };
+      fetchNames();
     } else {
       setQualifiedNames([]);
       setShuffleIndex(0);
@@ -343,10 +350,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
   const [submitted, setSubmitted] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [timeLeft, setTimeLeft] = useState<string>("00:00");
-  const [qualifiedStudents, setQualifiedStudents] = useState<{ id: string, name: string }[]>([]);
   const [pastWinners, setPastWinners] = useState<PastWinner[]>([]);
-  const [topStudents, setTopStudents] = useState<any[]>([]);
-  const [liveStats, setLiveStats] = useState({ totalAnswers: 0 });
   const [myAnswerData, setMyAnswerData] = useState<{ answerText: string, isCorrect: boolean } | null>(null);
 
   // منع النسخ وتصوير الشاشة المتكرر (مستوى الـ DOM)
@@ -430,26 +434,9 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
     return () => unsub();
   }, []);
 
-  useEffect(() => {
-    // Generate some mock top students for "Honor Roll"
-    const unsub = onSnapshot(collection(db, "students"), (snapshot) => {
-      const studs = snapshot.docs.map(d => d.data());
-      setTopStudents(studs.slice(0, 10)); // Take first 10 for display
-    });
-    return () => unsub();
-  }, []);
 
-  useEffect(() => {
-    if (competition?.id) {
-      const unsub = onSnapshot(collection(db, `competitions/${competition.id}/answers`), (snapshot) => {
-        const docs = snapshot.docs.map(d => d.data());
-        setLiveStats({
-          totalAnswers: docs.length
-        });
-      });
-      return () => unsub();
-    }
-  }, [competition?.id]);
+
+
 
   useEffect(() => {
     if (competition && student) {
@@ -491,17 +478,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
     return () => clearInterval(timer);
   }, [competition]);
 
-  useEffect(() => {
-    if (competition?.status === "drawing") {
-      const loadQualified = async () => {
-         const q = query(collection(db, `competitions/${competition.id}/answers`), where("isCorrect", "==", true));
-         const snap = await getDocs(q);
-         const students = snap.docs.map(d => ({ id: d.id, name: d.data().studentName }));
-         setQualifiedStudents(students);
-      };
-      loadQualified();
-    }
-  }, [competition?.status, competition?.id]);
+
 
   const handleSendAnswer = async () => {
     const finalAnswer = competition?.questionType === "multi" ? multiAnswers.join(", ") : answer;
@@ -709,15 +686,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
             <div className="text-5xl font-bold digital-font text-neon-cyan neon-glow-cyan">{timeLeft}</div>
           </div>
 
-          <div>
-            <h3 className="text-[14px] text-neon-purple uppercase mb-4 tracking-[1px] font-bold text-right">إحصائيات المسابقة</h3>
-            <ul className="space-y-3">
-              <li className="flex flex-row-reverse justify-between py-3 border-b border-white/5 text-sm">
-                <span>الطلاب المشاركين</span>
-                <span className="text-neon-cyan font-bold">{liveStats.totalAnswers}</span>
-              </li>
-            </ul>
-          </div>
+
 
           <div className="mt-auto bg-white/5 p-4 rounded-xl text-xs leading-relaxed text-right border border-neon-purple/20">
             <strong className="text-neon-purple block mb-1">تنبيه الإدارة:</strong>
@@ -1897,7 +1866,6 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                              <input 
                                type="file" 
                                accept="image/*" 
-                               capture="environment" 
                                className="hidden" 
                                onChange={(e) => e.target.files && handleHonorPhotoUpload(comp.id, e.target.files[0])}
                              />
@@ -1921,7 +1889,6 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                         <input 
                           type="file" 
                           accept="image/*" 
-                          capture="environment" 
                           className="hidden" 
                           onChange={(e) => e.target.files && handleHonorPhotoUpload(comp.id, e.target.files[0])}
                         />
