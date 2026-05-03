@@ -33,8 +33,10 @@ interface CompetitionData {
   prizeImageUrl?: string;
   adImageUrl?: string;
   adLink?: string;
-  status: "idle" | "active" | "drawing" | "finished";
+  status: "idle" | "scheduled" | "active" | "drawing" | "finished";
+  startTime?: string;
   endTime?: string;
+  isPaused?: boolean;
   winnerId?: string;
   winnerName?: string;
   winnerGrade?: string;
@@ -43,6 +45,11 @@ interface CompetitionData {
   note?: string;
   correctAnswer?: string; // New: For auto-correction
   createdAt?: string; // Required for sorting
+}
+
+interface GlobalSettings {
+  adImageUrl?: string;
+  adLink?: string;
 }
 
 interface StudentProfile {
@@ -352,6 +359,52 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
   const [timeLeft, setTimeLeft] = useState<string>("00:00");
   const [pastWinners, setPastWinners] = useState<PastWinner[]>([]);
   const [myAnswerData, setMyAnswerData] = useState<{ answerText: string, isCorrect: boolean } | null>(null);
+  const [globalAd, setGlobalAd] = useState<GlobalSettings | null>(null);
+  const [scheduleTimeLeft, setScheduleTimeLeft] = useState<{ d: number, h: number, m: number, s: number } | null>(null);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const effectiveStatus = useMemo(() => {
+    if (!competition) return "none";
+    if (competition.status === "drawing" || competition.status === "finished") return competition.status;
+    if (competition.isPaused) return "paused";
+    if (competition.status === "scheduled" && competition.startTime) {
+      if (now < new Date(competition.startTime).getTime()) return "scheduled";
+    }
+    if (competition.endTime && now >= new Date(competition.endTime).getTime()) {
+      return "ended";
+    }
+    return "active";
+  }, [competition, now]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "settings", "global"), (doc) => {
+      if (doc.exists()) setGlobalAd(doc.data() as GlobalSettings);
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!competition || competition.status !== "scheduled" || !competition.startTime) return;
+    const timer = setInterval(() => {
+      const diff = new Date(competition.startTime!).getTime() - new Date().getTime();
+      if (diff <= 0) {
+        setScheduleTimeLeft(null);
+      } else {
+        setScheduleTimeLeft({
+          d: Math.floor(diff / (1000 * 60 * 60 * 24)),
+          h: Math.floor((diff / (1000 * 60 * 60)) % 24),
+          m: Math.floor((diff / 1000 / 60) % 60),
+          s: Math.floor((diff / 1000) % 60)
+        });
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [competition]);
 
   // منع النسخ وتصوير الشاشة المتكرر (مستوى الـ DOM)
   useEffect(() => {
@@ -395,17 +448,11 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
   }, []);
 
   useEffect(() => {
-    // Fetch all competitions to find the most recent one
-    const unsub = onSnapshot(collection(db, "competitions"), (snapshot) => {
+    // Optimized: Only fetch the single most recent competition
+    const q = query(collection(db, "competitions"), orderBy("createdAt", "desc"), limit(1));
+    const unsub = onSnapshot(q, (snapshot) => {
       if (!snapshot.empty) {
-        const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as CompetitionData));
-        // Sort by createdAt (latest first)
-        const sorted = docs.sort((a, b) => {
-          const timeA = new Date(a.createdAt || 0).getTime();
-          const timeB = new Date(b.createdAt || 0).getTime();
-          return timeB - timeA;
-        });
-        setCompetition(sorted[0]);
+        setCompetition({ id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as CompetitionData);
       } else {
         setCompetition(null);
       }
@@ -415,23 +462,32 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
   }, []);
 
   useEffect(() => {
-    const unsub = onSnapshot(query(collection(db, "competitions"), where("status", "==", "finished")), (snapshot) => {
-      const winners = snapshot.docs.map(d => {
-        const data = d.data();
-        return {
-          id: d.id,
-          compTitle: data.title,
-          winnerName: data.winnerName,
-          winnerGrade: data.winnerGrade,
-          winnerSection: data.winnerSection,
-          prizeImageUrl: data.prizeImageUrl,
-          winnerPhotoUrl: data.winnerPhotoUrl, // Fetch photo URL
-          date: data.endTime || data.createdAt
-        } as PastWinner;
-      });
-      setPastWinners(winners.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-    });
-    return () => unsub();
+    // Optimized: Fetch past winners ONCE per session to save reads
+    const fetchPastWinners = async () => {
+      try {
+        const q = query(collection(db, "competitions"), where("status", "==", "finished"));
+        const snapshot = await getDocs(q);
+        const winners = snapshot.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            compTitle: data.title,
+            winnerName: data.winnerName,
+            winnerGrade: data.winnerGrade,
+            winnerSection: data.winnerSection,
+            prizeImageUrl: data.prizeImageUrl,
+            winnerPhotoUrl: data.winnerPhotoUrl, // Fetch photo URL
+            date: data.endTime || data.createdAt
+          } as PastWinner;
+        });
+        // Sort and take only top 15 to keep UI fast
+        setPastWinners(winners.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 15));
+      } catch (err) {
+        console.error("Failed to fetch past winners:", err);
+      }
+    };
+    
+    fetchPastWinners();
   }, []);
 
 
@@ -458,11 +514,11 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
   }, [competition?.id, student?.uid]);
 
   useEffect(() => {
-    if (!competition || competition.status !== "active" || !competition.endTime) return;
-
+    if (effectiveStatus !== "active" || !competition?.endTime) return;
+    const end = new Date(competition.endTime).getTime();
+    
     const timer = setInterval(() => {
       const now = new Date().getTime();
-      const end = new Date(competition.endTime!).getTime();
       const diff = end - now;
 
       if (diff <= 0) {
@@ -476,7 +532,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [competition]);
+  }, [competition, effectiveStatus]);
 
 
 
@@ -529,7 +585,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
     return <AdminView />;
   }
 
-  if (!competition) {
+  if (effectiveStatus === "none" || effectiveStatus === "scheduled" || effectiveStatus === "paused" || effectiveStatus === "ended") {
     return (
       <div className="min-h-screen flex flex-col p-5 gap-4">
         <header className="h-20 flex justify-between items-center bg-[rgba(20,20,35,0.8)] border border-neon-cyan/20 rounded-xl px-8 shadow-2xl" dir="rtl">
@@ -549,14 +605,60 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
           </div>
           <div className="flex items-center gap-5">
             <span className="text-sm opacity-80">الحالة: متصل</span>
-            <span className="bg-green-500/20 text-green-500 text-[11px] font-bold px-3 py-1 rounded">بث مباشر</span>
+            <span className="bg-green-500/20 text-green-500 text-[11px] font-bold px-3 py-1 rounded">مستعد</span>
           </div>
         </header>
 
-        <div className="flex-grow flex flex-col items-center justify-center text-center p-6 bg-dark-surface/30 rounded-3xl border border-white/5">
-          <Clock className="w-20 h-20 text-white/20 mb-6" />
-          <h2 className="text-3xl font-bold text-white/40">لا توجد مسابقات جارية حالياً</h2>
-          <p className="text-white/30 mt-2">يرجى الانتظار حتى تبدأ الإدارة المسابقة</p>
+        <div className="flex-grow flex flex-col items-center justify-center text-center p-6 bg-dark-surface/30 rounded-3xl border border-white/5 relative overflow-hidden">
+          {effectiveStatus === "scheduled" && scheduleTimeLeft ? (
+            <div className="space-y-6 flex flex-col items-center mb-10">
+               <h2 className="text-3xl md:text-5xl font-black text-neon-cyan mb-4">موعد مسابقتنا القادمة</h2>
+               <div className="flex gap-4 flex-row-reverse" dir="ltr">
+                  <div className="bg-black/50 p-4 rounded-2xl border-2 border-neon-purple min-w-[80px]">
+                     <div className="text-4xl font-bold text-white">{scheduleTimeLeft.d}</div>
+                     <div className="text-xs text-white/40 uppercase tracking-widest mt-1">يوم</div>
+                  </div>
+                  <div className="bg-black/50 p-4 rounded-2xl border-2 border-neon-cyan min-w-[80px]">
+                     <div className="text-4xl font-bold text-white">{scheduleTimeLeft.h}</div>
+                     <div className="text-xs text-white/40 uppercase tracking-widest mt-1">ساعة</div>
+                  </div>
+                  <div className="bg-black/50 p-4 rounded-2xl border-2 border-accent-gold min-w-[80px]">
+                     <div className="text-4xl font-bold text-white">{scheduleTimeLeft.m}</div>
+                     <div className="text-xs text-white/40 uppercase tracking-widest mt-1">دقيقة</div>
+                  </div>
+                  <div className="bg-black/50 p-4 rounded-2xl border-2 border-rose-500 min-w-[80px]">
+                     <div className="text-4xl font-bold text-white">{scheduleTimeLeft.s}</div>
+                     <div className="text-xs text-white/40 uppercase tracking-widest mt-1">ثانية</div>
+                  </div>
+               </div>
+               <h3 className="text-2xl font-bold text-white mt-4">{competition?.title}</h3>
+            </div>
+          ) : effectiveStatus === "paused" ? (
+            <div className="flex flex-col items-center mb-10">
+              <AlertCircle className="w-20 h-20 text-orange-500/50 mb-6" />
+              <h2 className="text-3xl font-bold text-orange-500">المسابقة مغلقة مؤقتاً</h2>
+              <p className="text-white/30 mt-2">يرجى الانتظار حتى تقوم الإدارة بفتحها مرة أخرى</p>
+            </div>
+          ) : effectiveStatus === "ended" ? (
+            <div className="flex flex-col items-center mb-10">
+              <Clock className="w-20 h-20 text-red-500/50 mb-6" />
+              <h2 className="text-3xl font-bold text-red-500">انتهى وقت المسابقة</h2>
+              <p className="text-white/30 mt-2">شكراً لمشاركتك، بانتظار إعلان النتائج</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center mb-10">
+              <Clock className="w-20 h-20 text-white/20 mb-6" />
+              <h2 className="text-3xl font-bold text-white/40">لا توجد مسابقات جارية حالياً</h2>
+              <p className="text-white/30 mt-2">يرجى الانتظار حتى تبدأ الإدارة المسابقة</p>
+            </div>
+          )}
+
+          {globalAd?.adImageUrl && (
+            <a href={globalAd.adLink || "#"} target="_blank" rel="noreferrer" className="block max-w-2xl w-full hover:scale-105 transition-transform duration-300">
+               <span className="text-[10px] text-white/20 uppercase tracking-widest block mb-2">إعلان</span>
+               <img src={globalAd.adImageUrl} alt="Ad" className="w-full object-cover rounded-3xl border-2 border-white/10 shadow-2xl" />
+            </a>
+          )}
         </div>
       </div>
     );
@@ -1012,15 +1114,7 @@ function StudentInterface({ student, isAdmin }: { student: StudentProfile, isAdm
         )}
       </AnimatePresence>
 
-      {/* Footer / Ad Bar */}
-      <footer className="h-[100px] bg-gradient-to-r from-transparent via-neon-cyan/5 to-transparent border-t border-white/5 flex items-center justify-center gap-10 text-sm opacity-60 tracking-wider">
-        {competition.adImageUrl && (
-          <div className="flex flex-row-reverse items-center gap-4">
-             <span>مساحة إعلانية: {competition.title}</span>
-             <a href={competition.adLink} target="_blank" rel="noreferrer" className="text-neon-cyan font-bold">سجل الآن</a>
-          </div>
-        )}
-      </footer>
+      <footer className="h-[20px]"></footer>
 
       {/* Confirmation Modal */}
       <AnimatePresence>
@@ -1169,6 +1263,16 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
   const [loading, setLoading] = useState(false);
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [copying, setCopying] = useState(false);
+  const [scheduleTime, setScheduleTime] = useState("");
+  const [endTimeStr, setEndTimeStr] = useState("");
+  const [globalAd, setGlobalAd] = useState<GlobalSettings>({ adImageUrl: "", adLink: "" });
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "settings", "global"), (docSnap) => {
+      if (docSnap.exists()) setGlobalAd(docSnap.data() as GlobalSettings);
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     const unsub = onSnapshot(query(collection(db, "competitions"), where("status", "==", "finished")), (snap) => {
@@ -1407,8 +1511,10 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
         ...newComp,
         options: finalOptions,
         correctAnswer: finalCorrectAnswer,
-        status: "active",
-        endTime,
+        status: scheduleTime ? "scheduled" : "active",
+        startTime: scheduleTime ? new Date(scheduleTime).toISOString() : null,
+        endTime: endTimeStr ? new Date(endTimeStr).toISOString() : null,
+        isPaused: false,
         createdAt: new Date().toISOString()
       });
       
@@ -1419,11 +1525,11 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
         questionType: "text",
         questionImageUrl: "",
         prizeImageUrl: "",
-        adImageUrl: "",
-        adLink: "",
         correctAnswer: ""
       });
       setOptions([{ id: "1", text: "", isCorrect: false }]);
+      setScheduleTime("");
+      setEndTimeStr("");
       
     } catch (err) {
       console.error(err);
@@ -1794,27 +1900,26 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                 </div>
               )}
 
-              {/* Ads & Links */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-8 bg-neon-cyan/5 rounded-3xl border border-neon-cyan/10">
-                <div className="space-y-2">
-                  <span className="text-xs font-bold text-neon-cyan/60 uppercase tracking-widest block text-right">المحتوى الإعلاني</span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-8 bg-neon-purple/5 rounded-3xl border border-neon-purple/10">
+                <div className="space-y-4">
+                  <label className="text-sm font-bold text-white/40 block text-right">موعد المسابقة (اختياري للجدولة)</label>
                   <input
-                    type="text"
-                    placeholder="رابط صورة للإعلان الجانبي"
-                    value={newComp.adImageUrl}
-                    onChange={(e) => setNewComp({ ...newComp, adImageUrl: e.target.value })}
-                    className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 outline-none focus:border-neon-cyan text-right text-sm"
+                    type="datetime-local"
+                    value={scheduleTime}
+                    onChange={(e) => setScheduleTime(e.target.value)}
+                    className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 outline-none focus:border-neon-purple text-right text-sm text-white"
                   />
+                  <p className="text-xs text-white/30 text-right">إذا قمت بتحديد موعد، ستظهر للطلاب كعد تنازلي وستبدأ المسابقة تلقائياً عند الدخول بالوقت.</p>
                 </div>
-                <div className="space-y-2">
-                  <span className="text-xs font-bold text-neon-cyan/60 uppercase tracking-widest block text-right">رابط توجيه</span>
-                   <input
-                    type="text"
-                    placeholder="رابط صفحة أو فيديو (يفتح عند الضغط)"
-                    value={newComp.adLink}
-                    onChange={(e) => setNewComp({ ...newComp, adLink: e.target.value })}
-                    className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 outline-none focus:border-neon-cyan text-right text-sm"
+                <div className="space-y-4">
+                  <label className="text-sm font-bold text-white/40 block text-right">موعد نهاية المسابقة (اختياري)</label>
+                  <input
+                    type="datetime-local"
+                    value={endTimeStr}
+                    onChange={(e) => setEndTimeStr(e.target.value)}
+                    className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 outline-none focus:border-red-500/50 text-right text-sm text-white"
                   />
+                  <p className="text-xs text-white/30 text-right">سيتم إغلاق المسابقة ومنع الإجابات تلقائياً عند هذا الوقت.</p>
                 </div>
               </div>
 
@@ -1900,6 +2005,70 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
               )}
             </div>
           </section>
+
+          <section className="bg-dark-surface p-10 rounded-[40px] border border-white/5 shadow-2xl space-y-8 mt-10">
+            <h2 className="text-2xl font-black text-white text-right">الإعلان المستقل (يظهر عندما لا توجد مسابقة)</h2>
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-black/20 p-6 rounded-3xl border border-white/5">
+                   <h3 className="text-sm font-bold text-white/40 mb-4 text-right">صورة الإعلان</h3>
+                   {globalAd.adImageUrl ? (
+                     <div className="space-y-4">
+                       <img src={globalAd.adImageUrl} className="w-full h-32 object-cover rounded-xl border border-white/10" alt="Ad" />
+                       <button 
+                         onClick={async () => {
+                           if(confirm("حذف الإعلان؟")) {
+                             await setDoc(doc(db, "settings", "global"), { adImageUrl: "", adLink: "" });
+                             setGlobalAd({ adImageUrl: "", adLink: "" });
+                           }
+                         }}
+                         className="w-full py-2 bg-red-500/10 text-red-500 text-xs font-bold rounded-lg border border-red-500/20"
+                       >
+                         حذف الإعلان
+                       </button>
+                     </div>
+                   ) : (
+                     <label className="cursor-pointer w-full h-32 border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-neon-cyan/40 hover:bg-neon-cyan/5 transition-all text-white/20">
+                        <Camera className="w-8 h-8" />
+                        <span className="text-xs font-bold">رفع صورة إعلانية</span>
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          className="hidden" 
+                          onChange={(e) => {
+                            if(e.target.files) {
+                              handleImageUpload(e.target.files[0], async (url) => {
+                                await setDoc(doc(db, "settings", "global"), { ...globalAd, adImageUrl: url });
+                                setGlobalAd(prev => ({ ...prev, adImageUrl: url }));
+                              });
+                            }
+                          }}
+                        />
+                     </label>
+                   )}
+                </div>
+                <div className="space-y-4">
+                  <label className="text-sm font-bold text-white/40 block text-right">رابط الإعلان (عند الضغط)</label>
+                  <input
+                    type="text"
+                    placeholder="https://..."
+                    value={globalAd.adLink}
+                    onChange={(e) => setGlobalAd({ ...globalAd, adLink: e.target.value })}
+                    className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 outline-none focus:border-neon-cyan text-right text-sm"
+                  />
+                  <button 
+                    onClick={async () => {
+                      await setDoc(doc(db, "settings", "global"), globalAd);
+                      alert("تم حفظ رابط الإعلان");
+                    }}
+                    className="w-full py-3 bg-neon-cyan text-black font-bold rounded-xl"
+                  >
+                    حفظ الرابط
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
 
         {/* Right Column: Active Comp & Answers */}
@@ -1913,7 +2082,28 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                   <div className={cn("w-2 h-2 rounded-full", competition.status === 'active' ? "bg-green-500 shadow-[0_0_10px_var(--green-500)]" : "bg-orange-500")} />
                </div>
                
-               {competition.status === 'drawing' ? (
+               {competition.status === 'scheduled' ? (
+                 <div className="p-8 text-right space-y-6">
+                    <div className="bg-neon-purple/10 border border-neon-purple/30 p-4 rounded-xl text-center">
+                       <div className="text-xs text-neon-purple/60 font-bold mb-1 uppercase">حالة المسابقة</div>
+                       <div className="text-xl font-black text-neon-purple">مجدولة</div>
+                       {competition.startTime && (
+                         <div className="text-sm text-white/40 mt-1" dir="ltr">{new Date(competition.startTime).toLocaleString('ar-SA')}</div>
+                       )}
+                    </div>
+                    <button
+                       onClick={async () => {
+                         if(confirm("هل تريد تفعيل المسابقة لتبدأ الآن؟")) {
+                           await setDoc(doc(db, "competitions", competition.id), { status: "active" }, { merge: true });
+                         }
+                       }}
+                       className="w-full py-5 bg-green-500 text-black font-black rounded-2xl hover:bg-green-400 shadow-lg transition-all flex items-center justify-center gap-3"
+                    >
+                       <Trophy className="w-6 h-6" />
+                       <span>تفعيل المسابقة الآن</span>
+                    </button>
+                 </div>
+               ) : competition.status === 'drawing' ? (
                  <WinnerDrawingZone 
                    answers={answers} 
                    onFinish={(winner, fallback) => finalizeWinner(winner, fallback)} 
@@ -1937,6 +2127,24 @@ function AdminView({ userProfile }: { userProfile?: StudentProfile }) {
                     </div>
 
                     <div className="flex flex-col gap-3">
+                      <button
+                        onClick={async () => {
+                          await setDoc(doc(db, "competitions", competition.id), { isPaused: !competition.isPaused }, { merge: true });
+                        }}
+                        className={cn(
+                          "w-full py-3 font-bold rounded-xl transition-all shadow-lg text-sm flex items-center justify-center gap-2",
+                          competition.isPaused 
+                            ? "bg-orange-500 text-black hover:bg-orange-400" 
+                            : "bg-white/5 border border-white/10 text-white hover:bg-white/10"
+                        )}
+                      >
+                        {competition.isPaused ? (
+                          <>▶ استئناف وفتح المسابقة للطلاب</>
+                        ) : (
+                          <>⏸ إيقاف مؤقت (إغلاق المسابقة)</>
+                        )}
+                      </button>
+
                       <button
                         onClick={handleStartDraw}
                         disabled={loading || competition.status !== "active"}
